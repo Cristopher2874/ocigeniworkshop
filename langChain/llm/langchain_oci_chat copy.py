@@ -39,7 +39,7 @@ from envyaml import EnvYAML
 SANDBOX_CONFIG_FILE = "sandbox.yaml"
 load_dotenv()
 
-LLM_MODEL = "openai.gpt-4.1"
+LLM_MODEL = "xai.grok-4.20-multi-agent-0309"
 # Available models: https://docs.oracle.com/en-us/iaas/Content/generative-ai/chat-models.htm
 
 LLM_SERVICE_ENDPOINT = "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
@@ -79,51 +79,10 @@ llm_client = ChatOCIGenAI(
     }
 )
 
-# Step 3: Single LLM call demonstration
-print(f"\n\n**************************Chat Result for {llm_client.model_id} **************************")
-response = llm_client.invoke(MESSAGE)
-print(response.content)
-
-# Step 4: Model performance comparison with timing
-selected_llms = [
-    "openai.gpt-4.1",
-    "openai.gpt-5.4",
-    "cohere.command-a-03-2025",
-    "cohere.command-r-08-2024",
-    "meta.llama-4-maverick-17b-128e-instruct-fp8",
-    "meta.llama-4-scout-17b-16e-instruct",
-    "xai.grok-4",
-    "xai.grok-4-fast-non-reasoning"
-]
-
-for llm_id in selected_llms:
-    llm_client.model_id = llm_id
-    print(f"\n\n**************************Chat Result for {llm_client.model_id} **************************")
-    start_time = time.time()
-    response = llm_client.invoke(MESSAGE)
-    end_time = time.time()
-    print(response.content)
-    print(f"\n Time taken for {llm_client.model_id}: {end_time - start_time:.2f} seconds\n\n")
-
-print(f"\n\n**************************Chat Full LangChain result for {llm_client.model_id} **************************")
-print(response)
-
-# Step 5: Batch processing example
-print(f"\n\n**************************Chat Result With batch for {llm_client.model_id} **************************")
-response = llm_client.batch(["why is sky blue", "why is it dark at night"])
-# print(response.additional_kwargs['finish_reason']) # extra parameters contained in response
-print(response) # main content parameter that has the string readable response from the model
-
-# Step 6: Max tokens parameter demonstration
-llm_client.model_kwargs['max_tokens'] = 10
-print(f"\n\n**************************Chat Result With max_tokens {llm_client.model_kwargs['max_tokens']} for {llm_client.model_id}**************************")
-response = llm_client.invoke(MESSAGE) # Notice this response is using the same modified seed from previous iteration
-print(response.additional_kwargs['finish_reason'])
-print(response.content)
 
 # Step 7: System and user prompt types demonstration
 print(f"\n\n**************************Chat Result with system & user prompts for {llm_client.model_id} **************************")
-system_message = {"role": "system", "content": "You are a poetic assistant who responds in exactly four lines."}
+system_message = {"role": "system", "content": "You are a poetic assistant who responds in exactly four lines using markdown lists. use bold & italics as needed "}
 user_message = {"role": "user", "content": "What are teh best tourist spots in mexico?"}
 messages = [system_message, user_message]
 

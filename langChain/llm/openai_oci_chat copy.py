@@ -43,7 +43,7 @@ SANDBOX_CONFIG_FILE = "sandbox.yaml"
 load_dotenv()
 
 
-LLM_MODEL = "openai.gpt-4.1"
+LLM_MODEL = "xai.grok-4.20-multi-agent-0309"
 # Available models: https://docs.oracle.com/en-us/iaas/Content/generative-ai/chat-models.htm
 
 MESSAGE = """
@@ -65,6 +65,7 @@ scfg = load_config(SANDBOX_CONFIG_FILE)
 llm_client = OCIOpenAIHelper.get_langchain_openai_client(
     model_name=LLM_MODEL,
     config=scfg
+    
 )
 
 # Step 3: Single LLM call demonstration
@@ -72,60 +73,4 @@ print(f"\n\n**************************Chat Result for {LLM_MODEL} **************
 response = llm_client.invoke(MESSAGE)
 print(response)
 
-# Step 4: Model performance comparison with timing
-selected_llms = [
-    "openai.gpt-oss-20b",
-    "openai.gpt-4.1",
-    "openai.gpt-5.2",
-    # "cohere.command-a-03-2025",      # Cohere doesn't support OpenAI compatible APIs yet
-    # "cohere.command-r-08-2024",      # Cohere doesn't support OpenAI compatible APIs yet
-    "meta.llama-4-maverick-17b-128e-instruct-fp8",
-    "meta.llama-4-scout-17b-16e-instruct",
-    "xai.grok-4",
-    "xai.grok-4-fast-non-reasoning"
-]
 
-# Test each model with timing
-for llm_id in selected_llms:
-    print(f"\n\n**************************Chat Result for {llm_id} **************************")
-    llm_client.model_name = llm_id
-    start_time = time.time()
-    response = llm_client.invoke(MESSAGE)
-    end_time = time.time()
-    print(response)
-    print(f"\n Time taken for {llm_id}: {end_time - start_time:.2f} seconds\n\n")
-
-print(f"\n\n**************************Chat Full LangChain result for {llm_id} **************************")
-print(response)
-
-# Step 5: Batch processing example
-print(f"\n\n**************************Chat Result With batch for {llm_id} **************************")
-try:
-    # If batch method supported
-    responses = llm_client.batch(["why is sky blue", "why is it dark at night"])
-    print(responses)
-except AttributeError:
-    # Fallback to sequential batch
-    questions = ["why is sky blue", "why is it dark at night"]
-    batch_responses = [llm_client.invoke(q) for q in questions]
-    for q, r in zip(questions, batch_responses):
-        print(f"Q: {q}\nA: {r}")
-
-# Step 6: Max tokens parameter demonstration
-print(f"\n\n**************************Chat Result With max_tokens 10 for {llm_id}**************************")
-llm_client.max_tokens = 10
-response = llm_client.invoke(MESSAGE)
-try:
-    print(response.additional_kwargs['finish_reason'])
-except Exception:
-    pass
-print(response)
-
-# Step 7: System and user prompt types demonstration
-print(f"\n\n**************************Chat Result with system & user prompts for {llm_id} **************************")
-system_message = {"role": "system", "content": "You are a poetic assistant who responds in exactly four lines."}
-user_message = {"role": "user", "content": "What is the meaning of life?"}
-messages = [system_message, user_message]
-
-response = llm_client.invoke(messages)
-print(response)
