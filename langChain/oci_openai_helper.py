@@ -159,6 +159,12 @@ class OCIOpenAIHelper:
         )
         use_responses_api = kwargs.pop("use_responses_api", True)
 
+        default_headers = {
+            "opc-compartment-id": config['oci']['compartment'],
+            "CompartmentId": config['oci']['compartment'],
+            "OpenAI-Project": config['oci']['project'],
+        }
+
         client = ChatOpenAI(
             base_url=GENAI_OPENAI_BASE_URL,
             http_client=httpx.Client(auth=OciUserPrincipalAuth(profile_name=config['oci']['profile'])),  # or OciResourcePrincipalAuth | OciInstancePrincipalAuth | OciUserPrincipalAuth,
