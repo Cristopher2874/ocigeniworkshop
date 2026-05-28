@@ -1,106 +1,204 @@
-"""What this file does:
-Shows vector store file batch operations:
-1) Create file batch
-2) Retrieve batch status
-3) List files in batch
-4) Optionally cancel batch
+""" What this file does:
+Shows the complete vector store file batch flow in one standalone script:
+1) Upload one or more local files with the Files API
+2) Create a vector store file batch from the uploaded file ids
+3) Retrieve batch status
+4) Poll until the batch reaches a terminal state
+5) List files in batch
+6) Optionally cancel the batch right after creation
+7) Optionally remove uploaded files from the vector store and Files API
 
 Documentation for reference:
 - OpenAI SDK overview: https://developers.openai.com/api/docs/quickstart
+- Files API reference: https://platform.openai.com/docs/api-reference/files
 - Vector store file batches API reference: https://platform.openai.com/docs/api-reference/vector-stores-file-batches
+- File Search guide: https://platform.openai.com/docs/guides/tools-file-search/
 - GenAI platform GA docs: https://confluence.oraclecorp.com/confluence/display/OCAS/Generative+AI+Platform+Agentic+Capabilities+-+March+2026+GA+User+Guide#expand-ExpandtolearnmoreifyouaremigratingfromLABetatoGA
 
-Environment setup:
-- Configure OCI credentials in `sandbox.yaml`.
-- Set `VECTOR_STORE_ID` and one or more `FILE_IDS` (or env var `VECTOR_FILE_IDS`).
+Relevant Slack channels:
+- #generative-ai-users: Questions about OCI Generative AI
+- #igiu-innovation-lab: General project discussions
+- #igiu-ai-learning: Help with sandbox environment and execution for this repo
+- #genai-hosted-deployment-users: GA deployment and integration updates with latest SDK
 
-How to run from repo root:
+Environment setup:
+- Configure OCI credentials, project, compartment, and profile in `sandbox.yaml`.
+- Set a valid `oci.unstructured_vector_store_id` in `sandbox.yaml`.
+- Point `LOCAL_FILE_PATHS` to one or more local files on your machine.
+
+How to run the file:
 uv run openai_sdk/genai_client/vector_store/vector_batch.py
 
 Safe experiments:
-1. Start with one file id, then test multi-file batches.
-2. Inspect retrieve/list outputs before trying cancel.
-3. Use attributes to tag batches for troubleshooting.
+1. Start with one small PDF or text file.
+2. Keep cleanup flags as `False` until you validate the batch flow.
+3. Use attributes to tag files for later filtering and debugging.
 
 Important sections:
 1. Step 1: Build configured OpenAI client.
-2. Step 2: Resolve vector store and file ids.
-3. Step 3-6: Create/retrieve/list/cancel batch flow.
+2. Step 2: Upload local files and collect `file_id` values.
+3. Step 3-7: Create/retrieve/poll/list/cancel batch flow.
+4. Step 8-9: Optional cleanup of vector store files and uploaded files.
 """
 
 from openai import OpenAI
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from openai_client_provider import OpenAIClientProvider
 
-VECTOR_STORE_ID = ""  # Set here, or create env var VECTOR_STORE_ID.
-FILE_IDS = [""]  # Put one or more file ids here. Example: ["file_abc", "file_def"].
-BATCH_ATTRIBUTES = {"category": "sample"}
-CANCEL_BATCH_AT_END = False
+LOCAL_FILE_PATHS = [
+    "./openai_sdk/output/sample_doc.pdf",
+]  # Replace with one or more local file paths.
 
-def _get_file_ids() -> list[str]:
-    clean_ids = [file_id.strip() for file_id in FILE_IDS if file_id and file_id.strip()]
-    if clean_ids:
-        return clean_ids
+POLL_INTERVAL_SECONDS = 5
+CANCEL_BATCH_IMMEDIATELY = False
 
-    raw = os.getenv("VECTOR_FILE_IDS", "").strip()
-    env_ids = [item.strip() for item in raw.split(",") if item.strip()]
-    return env_ids
+def cleanup_vector_store_files(client: OpenAI, vector_store_id: str, file_ids: list[str]) -> None:
+    """Detach uploaded files from the vector store while keeping the Files API objects."""
+    for file_id in file_ids:
+        try:
+            delete_result = client.vector_stores.files.delete(
+                vector_store_id=vector_store_id,
+                file_id=file_id,
+            )
+            print(f"Removed file from vector store: {file_id}")
+            print(delete_result)
+        except Exception as exc:
+            print(f"Could not remove file {file_id} from vector store: {exc}")
+
+
+def cleanup_uploaded_files(client: OpenAI, file_ids: list[str]) -> None:
+    """Delete uploaded Files API objects after the vector store demo is finished."""
+    for file_id in file_ids:
+        try:
+            delete_result = client.files.delete(file_id=file_id)
+            print(f"Deleted uploaded file object: {file_id}")
+            print(delete_result)
+        except Exception as exc:
+            print(f"Could not delete uploaded file {file_id}: {exc}")
+
 
 def main():
     # Step 1: Build the OCI OpenAI client from sandbox.yaml values.
+    print("Step 1 - Building OCI OpenAI client.")
     client: OpenAI = OpenAIClientProvider().oci_openai_client
 
-    # Step 2: Resolve required batch inputs.
-    vector_store_id = VECTOR_STORE_ID or os.getenv("VECTOR_STORE_ID", "").strip()
-    if not vector_store_id:
-        raise ValueError(
-            "Missing vector store id. Set VECTOR_STORE_ID constant in this file "
-            "or create env var VECTOR_STORE_ID."
-        )
+    # Step 2: Resolve required vector store input. File batches must target an
+    # existing vector store.
+    print("Step 2 - Resolving vector store id from sandbox.yaml.")
+    vector_store_id = OpenAIClientProvider().oci_openai_unstructured_vector_store_id
+    print(f"Using vector store id: {vector_store_id}")
 
-    file_ids = _get_file_ids()
-    if not file_ids:
-        raise ValueError(
-            "Missing file ids. Set FILE_IDS constant in this file "
-            "or create env var VECTOR_FILE_IDS (comma-separated)."
-        )
+    # Step 3: Upload local files and collect the returned file ids. The batch
+    # endpoint receives file ids, not local paths.
+    print("Step 3 - Uploading local files for batch ingestion.")
+    uploaded_file_ids: list[str] = []
 
-    # Step 3: Create file batch.
+    for file_path in LOCAL_FILE_PATHS:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Local file not found: {file_path}")
+
+        with open(file_path, "rb") as file_handle:
+            uploaded_file = client.files.create(file=file_handle, purpose="user_data")
+
+        print(f"Uploaded file from local path: {file_path}")
+        print(f"Returned file id: {uploaded_file.id}\n")
+        uploaded_file_ids.append(uploaded_file.id)
+
+    print("File ids created by the Files API:")
+    print(uploaded_file_ids)
+
+    # Step 4: Create vector store file batch using the uploaded file ids.
+    print("Step 4 - Creating vector store file batch.")
     batch = client.vector_stores.file_batches.create(
         vector_store_id=vector_store_id,
-        file_ids=file_ids,
-        attributes=BATCH_ATTRIBUTES, #type: ignore
+        file_ids=uploaded_file_ids,
+        attributes={"category": "sample_py_code_batch"},
+        chunking_strategy={"type": "auto"},
     )
+    print("Created vector store file batch:")
     print(batch)
+    print()
     batch_id = batch.id
 
-    # Step 4: Retrieve file batch.
+    # Step 5: Retrieve file batch right after creation to confirm the server
+    # accepted the request and returned a batch id.
+    print(f"Step 5 - Retrieving batch after creation: {batch_id}")
     retrieve_result = client.vector_stores.file_batches.retrieve(
         vector_store_id=vector_store_id,
         batch_id=batch_id,
     )
+    print("Retrieved batch after creation:")
     print(retrieve_result)
+    print()
 
-    # Step 5: List files in batch.
+    # Step 6: Optionally cancel right after creation to demonstrate cancel flow.
+    print("Step 6 - Checking whether immediate cancel is enabled.")
+    if CANCEL_BATCH_IMMEDIATELY:
+        cancel_result = client.vector_stores.file_batches.cancel(
+            vector_store_id=vector_store_id,
+            batch_id=batch_id,
+        )
+        print("Cancel request sent for batch:")
+        print(cancel_result)
+        print()
+    else:
+        print(
+            "Skipping immediate cancel. Set CANCEL_BATCH_IMMEDIATELY=True "
+            "to demonstrate the cancel endpoint."
+        )
+        print()
+
+    # Step 7: Poll the batch until it completes, fails, or is cancelled. Polling
+    # makes long-running ingestion visible in the terminal.
+    print("Step 7 - Polling batch status until it reaches a terminal state.")
+    terminal_statuses = {"completed", "failed", "cancelled"}
+    final_batch_state = None
+
+    while True:
+        batch = client.vector_stores.file_batches.retrieve(
+            vector_store_id=vector_store_id,
+            batch_id=batch_id,
+        )
+        print(
+            "Batch status check:"
+            f" status={batch.status},"
+            f" counts={batch.file_counts}"
+        )
+
+        if batch.status in terminal_statuses:
+            final_batch_state = batch
+            break
+
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+    print("Final batch state:")
+    print(final_batch_state)
+    print()
+
+    # Step 8: List files that belong to this batch.
+    print("Step 8 - Listing files that belong to this batch.")
     list_result = client.vector_stores.file_batches.list_files(
         vector_store_id=vector_store_id,
         batch_id=batch_id,
         limit=20,
     )
+    print("Files in batch:")
     print(list_result)
+    print()
 
-    # Step 6: Optional cancel.
-    if CANCEL_BATCH_AT_END:
-        cancel_result = client.vector_stores.file_batches.cancel(
-            vector_store_id=vector_store_id,
-            batch_id=batch_id,
-        )
-        print(cancel_result)
-    else:
-        print("Skipping cancel. Set CANCEL_BATCH_AT_END=True to cancel the created batch.")
+    # Step 9: Optional cleanup. These flags are False by default so beginners
+    # can inspect the uploaded files after the first run.
+    print("Step 9 - Running optional cleanup checks.")
+    cleanup_uploaded_files(client=client, file_ids=uploaded_file_ids)
+    cleanup_vector_store_files(
+        client=client,
+        vector_store_id=vector_store_id,
+        file_ids=uploaded_file_ids,
+    )
 
 if __name__ == "__main__":
     main()
