@@ -58,10 +58,10 @@ def main():
     print("\n<------------- Step 3: List containers ------------>")
     page = client.containers.list()
     print("Available containers:")
-    for container in page.data:
-        print(container.name)
-        print(container.id)
-        print(container.status)
+    for listed_container in page.data:
+        print(listed_container.name)
+        print(listed_container.id)
+        print(listed_container.status)
         print("-----------------------")
         # Optional client clean up while experimenting with test containers.
         # client.containers.delete(
