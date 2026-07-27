@@ -31,7 +31,10 @@ class OpenAIClientProvider:
         self.scfg = self.load_config(self.config_path)       
         
         # get the values from env variables
-        self.oci_openai_endpoint = DEFAULT_OPENAI_SKILLS_ENDPOINT
+        # For FRA project
+        # self.oci_openai_endpoint = DEFAULT_OPENAI_SKILLS_ENDPOINT
+        # For chicago project
+        self.oci_openai_endpoint = DEFAUL_OPENAI_ENDPOINT
         self.oci_openai_vector_endpoint = DEFAUL_OPENAI_VECTOR_ENDPOINT
         self.oci_openai_nl2sql_endpoint = NL2SQL_ENDPOINT
         self.oci_openai_api_key = self.scfg['oci']['api_key']
