@@ -3,10 +3,16 @@ What this file does:
 Implements the weather agent executor, including tool-backed weather lookups and
 A2A request handling.
 
+In simple terms:
+- this file defines a small weather tool that returns sample weather data
+- this file builds the LangChain agent that knows when to use that tool
+- this file translates A2A requests into LangChain calls and sends results back
+
 Documentation to reference:
 - A2A protocol: https://a2a-protocol.org/latest/topics/key-concepts/, https://a2a-protocol.org/latest/tutorials/python/1-introduction/#tutorial-sections
 - OCI Gen AI: https://docs.oracle.com/en-us/iaas/Content/generative-ai/pretrained-models.htm
 - OCI OpenAI compatible SDK: https://github.com/oracle-samples/oci-openai
+- Agent executor adapted from: https://github.com/a2aproject/a2a-samples/blob/main/samples/python/agents/helloworld/agent_executor.py
 
 Relevant Slack channels:
 - #generative-ai-users: Questions about OCI Generative AI
@@ -32,9 +38,19 @@ import os
 import random
 
 from envyaml import EnvYAML
+from a2a.helpers import (
+    new_task_from_user_message,
+    new_text_artifact,
+    new_text_message,
+)
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
-from a2a.utils import new_agent_text_message
+from a2a.types.a2a_pb2 import (
+    TaskArtifactUpdateEvent,
+    TaskState,
+    TaskStatus,
+    TaskStatusUpdateEvent,
+)
 from dotenv import load_dotenv
 from langchain.tools import tool
 from langchain.agents import create_agent
@@ -44,6 +60,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from oci_openai_helper import OCIOpenAIHelper
 
 load_dotenv()
+
+
+# ============================================================================
+# STEP 1: WEATHER TOOL
+# ============================================================================
+# This tool is intentionally simple for beginners. The host agent can call it
+# through LangChain, and the tool returns mock weather data for the demo.
 
 # Step 1: Define agent tool
 @tool
@@ -60,9 +83,16 @@ def get_weather(zipcode: int, date: str) -> dict[str, object]:
     }
     return city_weather
 
-# Step 2: Implement WeatherAgent class with config and LLM setup
+
+# ============================================================================
+# STEP 2: LANGCHAIN WEATHER AGENT
+# ============================================================================
+# This class loads the OCI-compatible model client and creates a LangChain agent
+# that can decide when to call the weather tool.
+
 class WeatherAgent:
     """Weather Agent."""
+
     def __init__(self):
         SANDBOX_CONFIG_FILE = "sandbox.yaml"
         LLM_MODEL = "xai.grok-4-fast-non-reasoning" # try changing to a reasoning model
@@ -92,20 +122,30 @@ class WeatherAgent:
             print(f"Error: Configuration file '{config_path}' not found.")
             return None
 
-    # Step 3: Define invoke method for agent execution
+    # =========================================================================
+    # STEP 3: REQUEST -> MODEL CALL
+    # =========================================================================
+    # `RequestContext` is the A2A-side object. This method extracts the user
+    # text, sends it to the LangChain agent, and returns the final answer.
     async def invoke(self, context: RequestContext) -> str:
         user_input = context.get_user_input()
-        print(user_input)
+        print(f"Weather agent received request: {user_input}")
 
         response = self.agent.invoke(
             input={"messages": [HumanMessage(str(user_input))]}
         )
 
-        print(response)
         final_response = response['messages'][-1].content
         return str(final_response)
 
-# Step 4: Implement WeatherAgentExecutor with execute and cancel methods
+
+# ============================================================================
+# STEP 4: A2A EXECUTOR WRAPPER
+# ============================================================================
+# The A2A server does not call LangChain directly. It calls this executor,
+# which is responsible for creating tasks, updating task status, and publishing
+# the final artifact back to the client.
+
 class WeatherAgentExecutor(AgentExecutor):
     """Weather Agent Executor Implementation."""
 
@@ -117,8 +157,45 @@ class WeatherAgentExecutor(AgentExecutor):
         context: RequestContext,
         event_queue: EventQueue,
     ) -> None:
+        message = context.message
+        if context.current_task is not None:
+            task = context.current_task
+        elif message is not None:
+            task = new_task_from_user_message(message)
+        else:
+            raise ValueError('RequestContext.message is required to create a new task')
+
+        await event_queue.enqueue_event(task)
+
+        await event_queue.enqueue_event(
+            TaskStatusUpdateEvent(
+                task_id=task.id,
+                context_id=task.context_id,
+                status=TaskStatus(
+                    state=TaskState.TASK_STATE_WORKING,
+                    message=new_text_message('Processing request...'),
+                ),
+            )
+        )
+
         result = await self.agent.invoke(context)
-        await event_queue.enqueue_event(new_agent_text_message(result))
+
+        await event_queue.enqueue_event(
+            TaskArtifactUpdateEvent(
+                task_id=task.id,
+                context_id=task.context_id,
+                artifact=new_text_artifact(name='result', text=result),
+            )
+        )
+        await event_queue.enqueue_event(
+            TaskStatusUpdateEvent(
+                task_id=task.id,
+                context_id=task.context_id,
+                status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED),
+            )
+        )
+        # result = await self.agent.invoke(context)
+        # await event_queue.enqueue_event(new_agent_text_message(result))
 
     async def cancel(
         self, context: RequestContext, event_queue: EventQueue

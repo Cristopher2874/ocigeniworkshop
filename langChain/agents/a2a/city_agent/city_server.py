@@ -1,12 +1,19 @@
 """
 What this file does:
-Runs the A2A city agent server, publishes its agent card, and registers the
-service with the central registry.
+Runs the A2A city agent server and publishes its agent card directly from the
+service endpoint.
+
+In simple terms:
+- this file starts the city specialist as a web server
+- this file exposes the public agent card used for direct discovery
+- this file registers that card in the central workshop registry
+- this file connects incoming A2A requests to the city executor
 
 Documentation to reference:
 - A2A protocol: https://a2a-protocol.org/latest/topics/key-concepts/, https://a2a-protocol.org/latest/tutorials/python/1-introduction/#tutorial-sections
 - OCI Gen AI: https://docs.oracle.com/en-us/iaas/Content/generative-ai/pretrained-models.htm
 - OCI OpenAI compatible SDK: https://github.com/oracle-samples/oci-openai
+- Connected agent adapted from: https://github.com/a2aproject/a2a-samples/blob/main/samples/python/agents/helloworld/__main__.py
 
 Relevant Slack channels:
 - #generative-ai-users: Questions about OCI Generative AI
@@ -23,7 +30,7 @@ uv run langChain/agents/a2a/city_agent/city_server.py
 Important sections:
 - Step 1: Define the agent skill metadata
 - Step 2: Build the public agent card
-- Step 3: Register with the central registry
+- Step 3: Register the card in the central registry
 - Step 4: Configure the request handler and server
 - Step 5: Start the server
 """
@@ -31,38 +38,50 @@ Important sections:
 import asyncio
 import uvicorn
 import httpx
+from google.protobuf.json_format import MessageToDict
 
-from a2a.server.apps import A2AStarletteApplication
+from starlette.applications import Starlette
 from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes import (
+    create_agent_card_routes,
+    create_jsonrpc_routes,
+)
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import (
     AgentCapabilities,
     AgentCard,
+    AgentInterface,
     AgentSkill,
 )
 from agent_executor import CityAgentExecutor
 
-# Constants
-REGISTRY_URL = "http://localhost:9990"
 AGENT_URL = "http://localhost:9997/"
+REGISTRY_URL = "http://localhost:9990"
 
-async def register_with_registry(agent_card: AgentCard):
-    """Register the agent with the central registry at startup."""
+
+# ============================================================================
+# STEP 1: SERVER ENTRY POINT
+# ============================================================================
+# This module is usually run directly. It defines the public metadata for the
+# city agent, wires the A2A routes, and starts the Starlette application.
+
+async def register_with_registry(public_agent_card: AgentCard) -> None:
+    """Register the public card so the host can discover this agent dynamically."""
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.post(
                 f"{REGISTRY_URL}/registry/register",
-                json=agent_card.model_dump()
+                json=MessageToDict(public_agent_card),
             )
-            if response.status_code == 201:
-                print(f"Successfully registered {agent_card.name} with registry")
-            else:
-                print(f"Failed to register {agent_card.name}: {response.status_code} - {response.text}")
-    except Exception as e:
-        print(f"Error registering {agent_card.name} with registry: {e}")
+            response.raise_for_status()
+        print("City agent registered with the central registry.")
+    except Exception as exc:
+        print(f"City agent could not register with the registry: {exc}")
 
 if __name__ == '__main__':
-    # Step 1: Define agent skill
+    # =========================================================================
+    # STEP 2: PUBLIC AGENT SKILL
+    # =========================================================================
     skill = AgentSkill(
         id='get_city',
         name='get_city',
@@ -71,31 +90,46 @@ if __name__ == '__main__':
         examples=['city where Oracle started'],
     )
 
-    # Step 2: Create public agent card
+    # =========================================================================
+    # STEP 3: PUBLIC AGENT CARD
+    # =========================================================================
     public_agent_card = AgentCard(
         name="city_agent",
-        url=AGENT_URL,
-        skills=[skill],
-        default_input_modes=['text'],
-        default_output_modes=['text'],
         description='Recommend a city based on the supplied criteria',
         version='1.0.0',
+        default_input_modes=['text/plain'],
+        default_output_modes=['text/plain'],
         capabilities=AgentCapabilities(streaming=True),
+        supported_interfaces=[
+            AgentInterface(
+                protocol_binding='JSONRPC',
+                url=AGENT_URL,
+            )
+        ],
+        skills=[skill],
     )
 
-    # Step 3: Register with central registry
+    # =========================================================================
+    # STEP 4: REGISTRY REGISTRATION
+    # =========================================================================
     asyncio.run(register_with_registry(public_agent_card))
 
-    # Step 4: Set up request handler and server
+    # =========================================================================
+    # STEP 5: REQUEST HANDLER AND ROUTES
+    # =========================================================================
     request_handler = DefaultRequestHandler(
         agent_executor=CityAgentExecutor(),
         task_store=InMemoryTaskStore(),
-    )
-
-    server = A2AStarletteApplication(
         agent_card=public_agent_card,
-        http_handler=request_handler
     )
 
-    # Step 5: Start server
-    uvicorn.run(server.build(), host='0.0.0.0', port=9997)
+    routes = []
+    routes.extend(create_agent_card_routes(public_agent_card))
+    routes.extend(create_jsonrpc_routes(request_handler, '/'))
+    app = Starlette(routes=routes)
+
+    # =========================================================================
+    # STEP 6: START SERVER
+    # =========================================================================
+    print(f"City agent server is starting at {AGENT_URL}")
+    uvicorn.run(app, host='0.0.0.0', port=9997)

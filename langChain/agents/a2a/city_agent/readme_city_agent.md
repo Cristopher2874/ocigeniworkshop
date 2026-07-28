@@ -9,6 +9,7 @@ The City Agent is an A2A (agent-to-agent) service that recommends cities based o
 This agent is one of the specialized services used by the main orchestrator.
 
 - It registers itself with the shared registry at startup.
+- It also publishes its own public agent card at the standard A2A route.
 - It exposes an A2A endpoint that other agents can call.
 - It is typically discovered and used by `langgraph_a2a_agent.py`.
 - Default local port: `9997`
@@ -35,19 +36,22 @@ This agent is one of the specialized services used by the main orchestrator.
 4. The model returns a typed city recommendation shaped by the `CityRecommendation` schema.
 5. The result is returned to the caller as the A2A response.
 
+## Dynamic Discovery Flow
+
+1. Start `agent_registry.py`.
+2. Start `city_server.py`.
+3. The city server registers its public agent card with the registry.
+4. The host asks the registry which agents are available.
+5. The host can then route city-related requests to this specialist.
+
 ## Prerequisites
 
 Before running this agent, make sure:
 
 - `sandbox.yaml` is configured correctly.
 - Any required environment variables are available in `.env`.
-- The central registry is running if you want this agent to register itself.
-
-Start the registry with:
-
-```bash
-uv run langChain/agents/a2a/agent_registry.py
-```
+- `agent_registry.py` is running if you want dynamic host discovery.
+- The agent port (`9997`) is available.
 
 ## How to Run
 
@@ -55,6 +59,12 @@ uv run langChain/agents/a2a/agent_registry.py
 
 ```bash
 uv run langChain/agents/a2a/city_agent/city_server.py
+```
+
+Optional check for registration:
+
+```bash
+http localhost:9990/registry/agents
 ```
 
 ### Test the agent directly
@@ -67,7 +77,7 @@ uv run langChain/agents/a2a/city_agent/test_client.py
 
 ### Use it through the main orchestrator
 
-If the registry and all remote agents are running:
+If the remote agents are running:
 
 ```bash
 uv run langChain/agents/a2a/langgraph_a2a_agent.py
@@ -85,14 +95,28 @@ Try prompts such as:
 
 - **Structured Output**: Use of a Pydantic model for predictable responses
 - **A2A Protocol**: Agent-to-agent communication over HTTP
-- **Registry Registration**: Automatic discovery through the shared registry
+- **Published Agent Card**: Direct discovery through the standard A2A card route
+- **Registry Registration**: Dynamic discovery through the shared workshop registry
 - **LLM Orchestration**: Turning free-form requests into typed outputs
 - **Type Safety**: Response validation through schema-driven generation
+
+## API Endpoints
+
+- `GET /.well-known/agent-card.json`: Agent card discovery
+- `POST /`: A2A JSON-RPC message processing
+
+## Registry Interaction
+
+At startup, `city_server.py` sends its public agent card to:
+
+- `POST http://localhost:9990/registry/register`
 
 ## Troubleshooting
 
 - **Agent does not appear in the orchestrator**
-  - Make sure `agent_registry.py` is running before you start `city_server.py`.
+  - Make sure `agent_registry.py` is running on port `9990`.
+  - Make sure `city_server.py` is running on port `9997`.
+  - Restart the city server and confirm the registration print appears.
 
 - **Port 9997 is already in use**
   - Stop the conflicting process or change the configured port in `city_server.py`.

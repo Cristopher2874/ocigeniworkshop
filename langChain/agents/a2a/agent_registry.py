@@ -1,7 +1,12 @@
 """
 What this file does:
-Provides a simple in-memory A2A agent registry server. Agents register at
-startup so the main orchestrator can discover them dynamically.
+Provides a small in-memory registry for A2A agent cards so the host agent can
+discover specialist agents dynamically.
+
+In simple terms:
+- specialist servers send their public agent card here when they start
+- the host agent asks this registry which agents are available
+- the registry returns the latest list of registered cards
 
 Documentation to reference:
 - A2A protocol: https://a2a-protocol.org/latest/topics/key-concepts/, https://a2a-protocol.org/latest/tutorials/python/1-introduction/#tutorial-sections
@@ -25,51 +30,97 @@ Sample commands:
 - http localhost:9990/health
 
 Important sections:
-- Step 1: Registry storage using an in-memory dictionary for agent cards
-- Step 2: API endpoints for register, list, health check, and get-by-URL
-- Step 3: Server startup on port 9990 for A2A agent registration
+- Step 1: Store registered agent cards in memory
+- Step 2: Accept new registrations from specialist servers
+- Step 3: Return the current list of registered agents
+- Step 4: Start the FastAPI registry server
 """
 
+from __future__ import annotations
 
-from typing import List, Optional, Dict
-
-import uvicorn
+from google.protobuf.json_format import MessageToDict, ParseDict
 from fastapi import FastAPI, HTTPException
+import uvicorn
+
 from a2a.types import AgentCard
 
-# Step 1: Simple in-memory registry using a dictionary
-agents: Dict[str, AgentCard] = {}
 
-# Step 2: Create the FastAPI application and endpoints
-app = FastAPI(title="A2A Agent Registry Server", description="Simple FastAPI server for agent discovery")
+# ============================================================================
+# STEP 1: IN-MEMORY REGISTRY STORAGE
+# ============================================================================
+# This workshop registry intentionally keeps things simple: cards are stored in
+# memory and are keyed by agent name. Restarting the registry clears the list.
 
-@app.post("/registry/register", response_model=AgentCard, status_code=201)
-async def register_agent(agent_card: AgentCard):
-    """Registers a new agent with the registry."""
-    print(f"Registering agent: {agent_card.name} at {agent_card.url}")
-    agents[agent_card.url] = agent_card
-    return agent_card
+agents_by_name: dict[str, AgentCard] = {}
 
-@app.get("/registry/agents", response_model=List[AgentCard])
+app = FastAPI(
+    title="A2A Agent Registry Server",
+    description="Simple FastAPI server for dynamic A2A agent discovery.",
+)
+
+
+def _card_to_dict(agent_card: AgentCard) -> dict:
+    """Convert a protobuf AgentCard into a JSON-ready dictionary."""
+    return MessageToDict(agent_card)
+
+
+def _card_lookup_key(agent_card: AgentCard) -> str:
+    """Choose a stable registry key for this agent card."""
+    return agent_card.name or (
+        agent_card.supported_interfaces[0].url
+        if agent_card.supported_interfaces
+        else "unknown-agent"
+    )
+
+
+# ============================================================================
+# STEP 2: REGISTRATION ENDPOINTS
+# ============================================================================
+# Specialist servers call these endpoints during startup so the host can later
+# discover them without hard-coding every agent URL.
+
+@app.post("/registry/register", status_code=201)
+async def register_agent(agent_card_data: dict):
+    """Register or update one agent card in the registry."""
+    agent_card = ParseDict(agent_card_data, AgentCard())
+    key = _card_lookup_key(agent_card)
+    agents_by_name[key] = agent_card
+
+    print(f"Registry stored agent '{key}'.")
+    return _card_to_dict(agent_card)
+
+
+@app.get("/registry/agents")
 async def list_registered_agents():
-    """Lists all currently registered agents."""
-    # list agent_names get hem from agent cards
-    return list(agents.values())
+    """List all currently registered agent cards."""
+    return [_card_to_dict(agent_card) for agent_card in agents_by_name.values()]
+
+
+@app.get("/registry/agents/{agent_name}")
+async def get_agent(agent_name: str):
+    """Get one registered agent card by name."""
+    agent_card = agents_by_name.get(agent_name)
+    if agent_card is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Agent '{agent_name}' not found in registry.",
+        )
+    return _card_to_dict(agent_card)
+
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy"}
+    """Basic health endpoint for local workshop testing."""
+    return {
+        "status": "healthy",
+        "registered_agents": len(agents_by_name),
+    }
 
-@app.get("/registry/agents/{url}", response_model=AgentCard)
-async def get_agent(url: str):
-    """Get a specific agent by URL."""
-    agent = agents.get(url)
-    if agent:
-        print(f"Returning agent: {agent.name}")
-        return agent
-    raise HTTPException(status_code=404, detail=f"Agent with URL '{url}' not found")
+
+# ============================================================================
+# STEP 4: SERVER STARTUP
+# ============================================================================
 
 if __name__ == "__main__":
-    # Step 3: Start the registry server
+    print("Agent registry server is starting at http://localhost:9990")
     uvicorn.run(app, host="0.0.0.0", port=9990)

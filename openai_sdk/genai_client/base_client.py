@@ -42,8 +42,7 @@ from openai_client_provider import OpenAIClientProvider
 
 
 MODEL_ID = "openai.gpt-5.2"
-BASIC_PROMPT = "When did the Roman Empire fall?"
-STREAM_PROMPT = "Why the sky is blue?"
+BASIC_PROMPT = "Why the sky is blue?"
 
 def main() -> None:
     # Step 1: Build a configured OpenAI client for OCI endpoint usage.
